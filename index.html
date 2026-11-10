@@ -331,6 +331,7 @@ const SIZES = {
   tall:     { w: 32, h: 66 },
   log:      { w: 92, h: 30 },
   hopper:   { w: 34, h: 34 },
+  pit:      { w: 80, h: 0 },  // 땅에 뚫린 구멍 (넓이는 만들 때 정해요)
   bee:      { w: 42, h: 30 },
   bat:      { w: 44, h: 26 },
   bird:     { w: 46, h: 26 },
@@ -338,7 +339,7 @@ const SIZES = {
 
 // 장애물 난이도: 쉬움·보통·어려움을 1단계부터 섞어서 내보내요
 const EASY   = ["ball", "mushroom", "rock"];
-const MEDIUM = ["hopper", "bee", "log"];
+const MEDIUM = ["hopper", "bee", "log", "pit"];
 const HARD   = ["tall", "bat"];
 function makeObstacle(x, groundOnly) {
   // 단계가 높을수록 어려운 장애물이 더 자주 나와요
@@ -346,15 +347,17 @@ function makeObstacle(x, groundOnly) {
   const easyW = 5, midW = 2 + stage * 0.4, hardW = 0.6 + stage * 0.45;
   const r = Math.random() * (easyW + midW + hardW);
   let list = r < easyW ? EASY : r < easyW + midW ? MEDIUM : HARD;
-  if (groundOnly) list = list.filter(t => t !== "bee" && t !== "bat"); // 붙어서 나올 땐 땅 장애물만
+  if (groundOnly) list = list.filter(t => t !== "bee" && t !== "bat" && t !== "pit"); // 붙어서 나올 땐 땅 위 장애물만
   if (stage < 6) list = list.filter(t => t !== "bat"); // 박쥐는 6단계부터 나와요
   const type = list[Math.floor(Math.random() * list.length)];
   return newObstacle(type, x);
 }
 function newObstacle(type, x) {
   const s = SIZES[type];
+  // 구멍은 단계가 높을수록 조금씩 넓어져요 (70~120칸)
+  const w = type === "pit" ? Math.min(120, 70 + Math.random() * (15 + stage * 3)) : s.w;
   return {
-    type, x, w: s.w, h: s.h,
+    type, x, w, h: s.h,
     bottom: type === "bee" ? GROUND - 58 : GROUND,
     color: COLORS[Math.floor(Math.random() * COLORS.length)],
     phase: Math.random() * 10,
@@ -375,7 +378,7 @@ function spawn() {
   obstacles.push(o);
   let width = o.w;
   // 1단계부터 가끔 2개가 붙어서 나오고, 7단계부터는 3개까지 붙어요
-  const ground = !["bee", "bat", "hopper"].includes(o.type);
+  const ground = !["bee", "bat", "hopper", "pit"].includes(o.type);
   if (ground && Math.random() < 0.12 + stage * 0.035) {
     const count = stage >= 7 && Math.random() < 0.5 ? 2 : 1;
     let nx = o.x + o.w + 4;
@@ -390,7 +393,10 @@ function spawn() {
   // 코인: 벌 밑에는 땅에, 땅 장애물 위에는 무지개처럼
   if (Math.random() < 0.6) {
     const cx = o.x + width / 2;
-    if (o.type === "bee") {
+    if (o.type === "pit") {
+      // 구멍 위에는 점프하는 길을 따라 코인 무지개
+      for (let i = 0; i < 3; i++) coins.push(makeCoin(cx + (i - 1) * 30, GROUND - 70 - Math.sin(((i + 1) / 4) * Math.PI) * 40));
+    } else if (o.type === "bee") {
       for (let i = -1; i <= 1; i++) coins.push(makeCoin(cx + i * 30, GROUND - 18));
     } else if (ground) {
       const top = Math.max(...obstacles.filter(p => p.x >= o.x).map(p => p.h));
@@ -429,7 +435,18 @@ function update() {
   // 개구리 점프·떨어지기
   frog.vy += 0.8;
   frog.y += frog.vy;
-  if (frog.y >= GROUND) {
+  // 개구리 발밑에 구멍이 있나요? (가장자리는 살짝 봐줘요. 무적일 땐 구멍 위도 걸을 수 있어요)
+  const pit = frog.inv === 0 && obstacles.find(o => o.type === "pit" && frog.x > o.x + 12 && frog.x < o.x + o.w - 12);
+  if (pit && frog.y > GROUND) frog.falling = true;   // 구멍으로 쑥 빠지기 시작
+  if (frog.y < GROUND) frog.falling = false;          // 재빨리 점프해서 빠져나왔어요!
+  if (frog.falling) {
+    if (frog.y > GROUND + 45) {
+      // 구멍에 빠졌어요! 하트를 하나 잃고 톡 튀어나와요
+      frog.falling = false;
+      frog.y = GROUND - 1; frog.vy = -16; frog.jumps = 1;
+      if (hurtFrog("#8c6a43")) return;
+    }
+  } else if (frog.y >= GROUND) {
     if (frog.jumps > 0) dust(frog.x, GROUND);
     frog.y = GROUND; frog.vy = 0; frog.jumps = 0;
   }
@@ -514,19 +531,10 @@ function update() {
   if (frog.inv === 0) {
     for (const o of obstacles) {
       const ob = { l: o.x + 5, r: o.x + o.w - 5, t: o.bottom - o.h + 5, b: o.bottom - 2 };
+      if (o.type === "pit") continue; // 구멍은 위에서 따로 확인해요
       if (hit(fb, ob)) {
-        lives--;
-        burst(frog.x, frog.y - 20, o.color, 30, 6);
-        shake = 14;
-        frog.hurt = 50;   // 아파하는 얼굴
         frog.vy = Math.min(frog.vy, -6); // 아야! 하고 살짝 튕김
-        if (lives <= 0) {
-          frog.hurt = Infinity; // 게임 오버면 계속 슬픈 얼굴
-          floatText(frog.x + 10, frog.y - 60, "으앙...", "#4dabf7", 28);
-          showEnd("over"); return;
-        }
-        floatText(frog.x + 10, frog.y - 60, "아야!", "#e03131", 28);
-        frog.inv = 90; // 잠깐 깜빡이며 무적
+        if (hurtFrog(o.color)) return;
         break;
       }
     }
@@ -534,6 +542,23 @@ function update() {
 
   updateParticles();
   if (banner > 0) banner--;
+}
+
+// 개구리가 다쳤을 때 (게임 오버면 true를 돌려줘요)
+function hurtFrog(color) {
+  lives--;
+  burst(frog.x, frog.y - 20, color, 30, 6);
+  shake = 14;
+  frog.hurt = 50;   // 아파하는 얼굴
+  if (lives <= 0) {
+    frog.hurt = Infinity; // 게임 오버면 계속 슬픈 얼굴
+    floatText(frog.x + 10, frog.y - 60, "으앙...", "#4dabf7", 28);
+    showEnd("over");
+    return true;
+  }
+  floatText(frog.x + 10, frog.y - 60, "아야!", "#e03131", 28);
+  frog.inv = 90; // 잠깐 깜빡이며 무적
+  return false;
 }
 
 function updateParticles() {
@@ -742,7 +767,7 @@ function drawFrog() {
   const hurt = frog.hurt > 0;
   if (!hurt && frog.inv > 0 && Math.floor(frog.inv / 5) % 2 === 0) return; // 무적일 때 깜빡깜빡
   const x = frog.x;
-  const inAir = frog.y < GROUND;
+  const inAir = frog.y !== GROUND; // 구멍에 빠지는 중일 때도 공중 자세
   const bob = inAir || state !== "playing" ? 0 : Math.abs(Math.sin(frame * 0.3)) * 3; // 땅에서는 깡총깡총
   const y = frog.y - bob;
   const body  = kind === "prince" ? "#5cc04a" : "#6fcf5c";  // 밝은 연두색
@@ -752,6 +777,13 @@ function drawFrog() {
 
   ctx.save();
   ctx.lineJoin = "round"; ctx.lineCap = "round";
+  // 구멍에 빠지는 중이면 땅속에 들어간 부분은 안 보이게 (구멍 안만 보여요)
+  if (frog.y > GROUND) {
+    ctx.beginPath();
+    ctx.rect(0, 0, W, GROUND);
+    obstacles.forEach(o => { if (o.type === "pit") ctx.rect(o.x, GROUND, o.w, H - GROUND); });
+    ctx.clip();
+  }
 
   // 뒷다리 (땅에서는 접고, 공중에서는 뒤로 쭉 뻗어요)
   ctx.fillStyle = dark;
@@ -897,7 +929,26 @@ function spikeBall(cx, cy, r, color, rot) {
 function drawObstacle(o) {
   const x = o.x, b = o.bottom, w = o.w, h = o.h, cx = x + w / 2;
   ctx.save();
-  if (o.type === "ball") {
+  if (o.type === "pit") {
+    // 땅에 뚫린 깜깜한 구멍
+    const g = ctx.createLinearGradient(0, GROUND, 0, H);
+    g.addColorStop(0, "#2a1d10"); g.addColorStop(1, "#000000");
+    ctx.fillStyle = g;
+    ctx.fillRect(x, GROUND, w, H - GROUND);
+    ctx.fillStyle = "rgba(0,0,0,0.35)"; // 구멍 안쪽 벽 그림자
+    ctx.fillRect(x, GROUND, 8, H - GROUND);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(x + w - 8, GROUND, 8, H - GROUND);
+    // 구멍 가장자리 풀 (둥글게 늘어진 잔디)
+    ctx.fillStyle = theme().grass;
+    ellipse(x, GROUND + 6, 7, 8); ellipse(x + w, GROUND + 6, 7, 8);
+    // 구멍 앞의 조심 표지판
+    ctx.fillStyle = "#8b5a2b"; ctx.fillRect(x - 30, GROUND - 26, 4, 26);
+    ctx.fillStyle = "#ffd43b";
+    ctx.beginPath(); ctx.moveTo(x - 28, GROUND - 44); ctx.lineTo(x - 16, GROUND - 24); ctx.lineTo(x - 40, GROUND - 24); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#1b1b1b"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("!", x - 28, GROUND - 27);
+  } else if (o.type === "ball") {
     // 데굴데굴 가시공
     spikeBall(cx, b - h / 2, h / 2 - 4, o.color, -frame * 0.15);
   } else if (o.type === "hopper") {
@@ -1089,7 +1140,7 @@ function drawHUD() {
     ctx.lineWidth = 6; ctx.strokeStyle = "#1f6b2c";
     const text = stage + "단계!";
     ctx.strokeText(text, W / 2, 150); ctx.fillStyle = "#fff3b0"; ctx.fillText(text, W / 2, 150);
-    const tips = { 1: "쉬운 장애물, 어려운 장애물이 섞여 나와요!", 2: "하늘에 새가 나타났어요!", 5: "어려운 장애물이 더 자주 나와요!",
+    const tips = { 1: "땅에 뚫린 구멍에 빠지지 않게 점프!",2: "하늘에 새가 나타났어요!", 5: "어려운 장애물이 더 자주 나와요!",
                    6: "휙 내려오는 박쥐 등장!", 7: "장애물이 3개까지 붙어요!", 10: "새가 더 자주 날아와요!", 13: "마지막 단계!" };
     const tip = tips[stage] || (stage > 1 ? "더 빨라져요!" : "");
     ctx.font = "bold 22px sans-serif";
